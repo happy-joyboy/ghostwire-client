@@ -1,22 +1,34 @@
-'use client';
-import { useState, useRef, useEffect } from 'react';
-import { io } from 'socket.io-client';
-import { HardwareStatusBadge } from '../components/HardwareStatusBadge';
-import { MessageBubble } from '../components/MessageBubble';
-import { MessageInputBar } from '../components/MessageInputBar';
-import { MessagePayload } from '../types';
-import { checkStatus, encryptPayload, decryptPayload } from '../lib/esp32';
-import { hideTextInImage } from '../lib/stego';
+"use client";
+import { useState, useRef, useEffect } from "react";
+import { io } from "socket.io-client";
+import { HardwareStatusBadge } from "../components/HardwareStatusBadge";
+import { MessageBubble } from "../components/MessageBubble";
+import { MessageInputBar } from "../components/MessageInputBar";
+import { MessagePayload } from "../types";
+import {
+  checkStatus,
+  encryptPayload,
+  decryptPayload,
+  getPublicKey,
+  setPeerKey,
+} from "../lib/esp32";
+import { hideTextInImage } from "../lib/stego";
+import { KeyRound } from "lucide-react"; // New icon for the Pair button
 
-const socket = io('http://localhost:3001', {
+const socket = io("http://localhost:3001", {
   autoConnect: false,
 });
 
 export default function Home() {
   const [messages, setMessages] = useState<MessagePayload[]>([
-    { id: 'boot', text: 'Initializing terminal...', sender: 'System', timestamp: Date.now() }
+    {
+      id: "boot",
+      text: "Initializing terminal...",
+      sender: "System",
+      timestamp: Date.now(),
+    },
   ]);
-  
+
   const [hsmConnected, setHsmConnected] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -28,7 +40,6 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
-  // --- THE HEARTBEAT LOGIC ---
   useEffect(() => {
     const pingHardware = async () => {
       const isOnline = await checkStatus();
@@ -39,127 +50,166 @@ export default function Home() {
     return () => clearInterval(intervalId);
   }, []);
 
-  // --- WEBSOCKET INTEGRATION & RECEIVE INTERCEPT ---
   useEffect(() => {
     socket.connect();
 
-    socket.on('connect', () => {
-      setMessages(prev => [...prev, {
-        id: Math.random().toString(),
-        text: `Global relay connected. Socket ID: ${socket.id}`,
-        sender: 'System',
-        timestamp: Date.now()
-      }]);
+    socket.on("connect", () => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(),
+          text: `Global relay connected. Socket ID: ${socket.id}`,
+          sender: "System",
+          timestamp: Date.now(),
+        },
+      ]);
     });
 
-    socket.on('receive_message', async (payload: MessagePayload) => {
+    socket.on("receive_message", async (payload: MessagePayload) => {
       try {
-        // SCENARIO A: We received a Ghost Image Payload
-        if (payload.imageUrl) {
-          console.log("👻 GHOST IMAGE RECEIVED");
-          const incomingGhost: MessagePayload = {
-            ...payload,
-            sender: 'Peer' // Render the image on the left
-          };
-          setMessages(prev => [...prev, incomingGhost]);
-          return; // Stop here! The MessageBubble will handle extraction/decryption on click.
+        // --- SCENARIO A: DIFFIE-HELLMAN KEY EXCHANGE ---
+        if (payload.isKeyExchange && payload.publicKey) {
+          console.log("🔑 RECEIVED PEER PUBLIC KEY:", payload.publicKey);
+
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              text: `[DH HANDSHAKE] Received Remote Public Key. Securing hardware session...`,
+              sender: "System",
+              timestamp: Date.now(),
+            },
+          ]);
+
+          // Give the peer's key to our local ESP8266 to compute the shared secret
+          const success = await setPeerKey(payload.publicKey);
+
+          if (success) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: Math.random().toString(),
+                text: `[AES LOCKED] Hardware secure session established! You may now transmit.`,
+                sender: "System",
+                timestamp: Date.now(),
+              },
+            ]);
+          }
+          return; // Stop here, don't try to decrypt a key exchange message
         }
 
-        // SCENARIO B: We received a standard text ciphertext
-        console.log("🔒 RAW CIPHERTEXT RECEIVED:", payload.text);
-        const plaintext = await decryptPayload(payload.text!);
-        console.log("🔓 DECRYPTED PLAINTEXT:", plaintext);
+        // --- SCENARIO B: GHOST IMAGE ---
+        if (payload.imageUrl) {
+          const incomingGhost: MessagePayload = { ...payload, sender: "Peer" };
+          setMessages((prev) => [...prev, incomingGhost]);
+          return;
+        }
 
+        // --- SCENARIO C: STANDARD CIPHERTEXT ---
+        const plaintext = await decryptPayload(payload.text!);
         const incomingText: MessagePayload = {
           ...payload,
           text: plaintext,
-          sender: 'Peer'
+          sender: "Peer",
         };
-        
-        setMessages(prev => [...prev, incomingText]);
+        setMessages((prev) => [...prev, incomingText]);
       } catch (error) {
         console.error("Receive failed", error);
       }
     });
 
     return () => {
-      socket.off('connect');
-      socket.off('receive_message');
+      socket.off("connect");
+      socket.off("receive_message");
       socket.disconnect();
     };
   }, []);
 
-  // --- OUTBOUND LOGIC & SEND INTERCEPT ---
-  // Note the new signature accepts the optional `file`
-  const handleSendMessage = async (text: string, isGhost: boolean, file?: File) => {
+  // --- NEW: INITIATE HANDSHAKE ---
+  const initiateHandshake = async () => {
+    if (!hsmConnected) return;
+
+    try {
+      // 1. Get our local Public Key from the ESP8266
+      const myPublicKey = await getPublicKey();
+
+      // 2. Broadcast it to the peer over the internet
+      socket.emit("send_message", {
+        id: Math.random().toString(),
+        sender: "System",
+        timestamp: Date.now(),
+        isKeyExchange: true,
+        publicKey: myPublicKey,
+      });
+
+      // 3. Update local UI
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(),
+          text: `[DH HANDSHAKE] Transmitted Local Public Key to remote peer.`,
+          sender: "System",
+          timestamp: Date.now(),
+        },
+      ]);
+    } catch (error) {
+      console.error("Handshake generation failed", error);
+    }
+  };
+
+  const handleSendMessage = async (
+    text: string,
+    isGhost: boolean,
+    file?: File,
+  ) => {
     const messageId = Math.random().toString();
     const timestamp = Date.now();
 
-    if (!hsmConnected) {
-      setMessages(prev => [...prev, {
-        id: Math.random().toString(),
-        text: 'SYSTEM HALT: Cannot encrypt payload. HSM is disconnected.',
-        sender: 'System',
-        timestamp: Date.now()
-      }]);
-      return;
-    }
+    if (!hsmConnected) return;
 
     try {
-      // 1. ALL payloads must be encrypted by the ESP32 first
       const ciphertext = await encryptPayload(text);
 
       if (isGhost && file) {
-        // --- GHOST MODE FLOW ---
-        console.log("👻 HIDING CIPHERTEXT IN IMAGE...");
-        
-        // 2. Inject ciphertext into the image pixels
         const stegoImageBase64 = await hideTextInImage(ciphertext, file);
-
         const payload: MessagePayload = {
           id: messageId,
           imageUrl: stegoImageBase64,
-          sender: 'You',
+          sender: "You",
           timestamp,
-          isGhostMode: true
+          isGhostMode: true,
         };
-
-        // Render the image locally so the sender sees what they uploaded
-        setMessages(prev => [...prev, payload]);
-
-        // Blast the heavy image over the sockets
-        socket.emit('send_message', payload);
-
+        setMessages((prev) => [...prev, payload]);
+        socket.emit("send_message", payload);
       } else {
-        // --- NORMAL MODE FLOW ---
-        console.log("🔒 ENCRYPTED TEXT READY FOR WIRE:", ciphertext);
-
-        // Show plaintext locally
-        setMessages(prev => [...prev, {
-          id: messageId,
-          text: text,
-          sender: 'You',
-          timestamp,
-          isGhostMode: false
-        }]);
-
-        // Send ciphertext to peer
-        socket.emit('send_message', {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: messageId,
+            text: text,
+            sender: "You",
+            timestamp,
+            isGhostMode: false,
+          },
+        ]);
+        socket.emit("send_message", {
           id: messageId,
           text: ciphertext,
-          sender: 'You',
+          sender: "You",
           timestamp,
-          isGhostMode: false
+          isGhostMode: false,
         });
       }
-
     } catch (error) {
-      setMessages(prev => [...prev, {
-        id: Math.random().toString(),
-        text: 'TRANSMISSION FAILED. PAYLOAD DROPPED.',
-        sender: 'System',
-        timestamp: Date.now()
-      }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(),
+          text: "TRANSMISSION FAILED: Session might not be initialized.",
+          sender: "System",
+          timestamp: Date.now(),
+        },
+      ]);
     }
   };
 
@@ -170,10 +220,29 @@ export default function Home() {
           <h1 className="text-xl font-bold tracking-[0.3em] text-[#00ff00] drop-shadow-[0_0_5px_rgba(0,255,0,0.5)]">
             GHOSTWIRE
           </h1>
-          <span className="text-[10px] text-gray-500 font-mono">SECURE RELAY TERMINAL</span>
+          <span className="text-[10px] text-gray-500 font-mono">
+            SECURE RELAY TERMINAL
+          </span>
         </div>
-        
-        <HardwareStatusBadge isConnected={hsmConnected} /> 
+
+        <div className="flex items-center gap-4">
+          {/* THE NEW PAIR BUTTON */}
+          <button
+            onClick={initiateHandshake}
+            disabled={!hsmConnected}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded border text-xs font-bold tracking-widest transition-all
+              ${
+                hsmConnected
+                  ? "border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10 shadow-[0_0_8px_rgba(234,179,8,0.3)]"
+                  : "border-gray-800 text-gray-600 opacity-50 cursor-not-allowed"
+              }`}
+          >
+            <KeyRound size={14} />
+            <span>EXCHANGE KEYS</span>
+          </button>
+
+          <HardwareStatusBadge isConnected={hsmConnected} />
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 bg-[#050505] custom-scrollbar">
