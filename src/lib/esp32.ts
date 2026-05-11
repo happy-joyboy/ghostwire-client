@@ -1,5 +1,5 @@
 // --- CONFIGURATION ---
-const USE_MOCK_HARDWARE = true;
+const USE_MOCK_HARDWARE = false;
 const ESP32_IP = "http://10.61.2.50";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
