@@ -13,22 +13,16 @@ import {
   setPeerKey,
 } from "../lib/esp32";
 import { hideTextInImage } from "../lib/stego";
-import { KeyRound } from "lucide-react"; // New icon for the Pair button
+import { KeyRound } from "lucide-react";
 
-const socket = io("http://localhost:3001", {
+// Make sure to use your computer's actual local IP address here!
+const socket = io("http://192.168.1.9:3001", {
   autoConnect: false,
 });
 
 export default function Home() {
-  const [messages, setMessages] = useState<MessagePayload[]>([
-    {
-      id: "boot",
-      text: "Initializing terminal...",
-      sender: "System",
-      timestamp: Date.now(),
-    },
-  ]);
-
+  const [messages, setMessages] = useState<MessagePayload[]>([]);
+  const [isMounted, setIsMounted] = useState(false);
   const [hsmConnected, setHsmConnected] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -36,10 +30,25 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // 1. Initializer Hook
+  useEffect(() => {
+    setIsMounted(true);
+    setMessages([
+      {
+        id: Math.random().toString(),
+        text: "Initializing terminal...",
+        sender: "System",
+        timestamp: Date.now(),
+      },
+    ]);
+  }, []);
+
+  // 2. Auto-scroll Hook
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
+  // 3. Hardware Polling Hook
   useEffect(() => {
     const pingHardware = async () => {
       const isOnline = await checkStatus();
@@ -50,6 +59,7 @@ export default function Home() {
     return () => clearInterval(intervalId);
   }, []);
 
+  // 4. Socket Connection & Messaging Hook
   useEffect(() => {
     socket.connect();
 
@@ -81,7 +91,6 @@ export default function Home() {
             },
           ]);
 
-          // Give the peer's key to our local ESP8266 to compute the shared secret
           const success = await setPeerKey(payload.publicKey);
 
           if (success) {
@@ -95,7 +104,7 @@ export default function Home() {
               },
             ]);
           }
-          return; // Stop here, don't try to decrypt a key exchange message
+          return;
         }
 
         // --- SCENARIO B: GHOST IMAGE ---
@@ -125,15 +134,12 @@ export default function Home() {
     };
   }, []);
 
-  // --- NEW: INITIATE HANDSHAKE ---
   const initiateHandshake = async () => {
     if (!hsmConnected) return;
 
     try {
-      // 1. Get our local Public Key from the ESP8266
       const myPublicKey = await getPublicKey();
 
-      // 2. Broadcast it to the peer over the internet
       socket.emit("send_message", {
         id: Math.random().toString(),
         sender: "System",
@@ -142,7 +148,6 @@ export default function Home() {
         publicKey: myPublicKey,
       });
 
-      // 3. Update local UI
       setMessages((prev) => [
         ...prev,
         {
@@ -213,6 +218,13 @@ export default function Home() {
     }
   };
 
+  // ✅ CRITICAL FIX: The return null must go HERE, after all useEffects are declared!
+  if (!isMounted) {
+    return (
+      <main className="flex flex-col h-screen max-w-4xl mx-auto border-x border-[#00ff00]/20 bg-black shadow-2xl shadow-[#00ff00]/5" />
+    );
+  }
+
   return (
     <main className="flex flex-col h-screen max-w-4xl mx-auto border-x border-[#00ff00]/20 bg-black shadow-2xl shadow-[#00ff00]/5">
       <header className="flex justify-between items-center p-4 border-b border-[#00ff00]/30 bg-[#0a0a0a]">
@@ -226,7 +238,6 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* THE NEW PAIR BUTTON */}
           <button
             onClick={initiateHandshake}
             disabled={!hsmConnected}
