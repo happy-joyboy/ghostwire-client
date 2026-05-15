@@ -11,9 +11,10 @@ import {
   decryptPayload,
   getPublicKey,
   setPeerKey,
+  setHardwarePort, // <-- We import our new function
 } from "../lib/esp32";
 import { hideTextInImage } from "../lib/stego";
-import { KeyRound } from "lucide-react";
+import { KeyRound, Users } from "lucide-react"; 
 
 // Make sure to use your computer's actual local IP address here!
 const socket = io("http://192.168.1.9:3001", {
@@ -24,13 +25,16 @@ export default function Home() {
   const [messages, setMessages] = useState<MessagePayload[]>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [hsmConnected, setHsmConnected] = useState<boolean>(false);
+  
+  // NEW: State to track which user this tab represents
+  const [activeUser, setActiveUser] = useState<'A' | 'B'>('A');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // 1. Initializer Hook
   useEffect(() => {
     setIsMounted(true);
     setMessages([
@@ -43,12 +47,10 @@ export default function Home() {
     ]);
   }, []);
 
-  // 2. Auto-scroll Hook
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
-  // 3. Hardware Polling Hook
   useEffect(() => {
     const pingHardware = async () => {
       const isOnline = await checkStatus();
@@ -59,7 +61,6 @@ export default function Home() {
     return () => clearInterval(intervalId);
   }, []);
 
-  // 4. Socket Connection & Messaging Hook
   useEffect(() => {
     socket.connect();
 
@@ -77,10 +78,7 @@ export default function Home() {
 
     socket.on("receive_message", async (payload: MessagePayload) => {
       try {
-        // --- SCENARIO A: DIFFIE-HELLMAN KEY EXCHANGE ---
         if (payload.isKeyExchange && payload.publicKey) {
-          console.log("🔑 RECEIVED PEER PUBLIC KEY:", payload.publicKey);
-
           setMessages((prev) => [
             ...prev,
             {
@@ -104,17 +102,15 @@ export default function Home() {
               },
             ]);
           }
-          return;
+          return; 
         }
 
-        // --- SCENARIO B: GHOST IMAGE ---
         if (payload.imageUrl) {
           const incomingGhost: MessagePayload = { ...payload, sender: "Peer" };
           setMessages((prev) => [...prev, incomingGhost]);
           return;
         }
 
-        // --- SCENARIO C: STANDARD CIPHERTEXT ---
         const plaintext = await decryptPayload(payload.text!);
         const incomingText: MessagePayload = {
           ...payload,
@@ -133,6 +129,24 @@ export default function Home() {
       socket.disconnect();
     };
   }, []);
+
+  // NEW: Handler for swapping between User A and User B
+  const handleUserToggle = (user: 'A' | 'B') => {
+    setActiveUser(user);
+    // Tell the esp32.ts bridge to route traffic to the correct port
+    setHardwarePort(user === 'A' ? 80 : 81);
+    
+    // Add a system message so you know it switched
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: Math.random().toString(),
+        text: `[SYSTEM] Switched identity to User ${user} (Port ${user === 'A' ? 80 : 81}).`,
+        sender: "System",
+        timestamp: Date.now(),
+      },
+    ]);
+  };
 
   const initiateHandshake = async () => {
     if (!hsmConnected) return;
@@ -218,7 +232,6 @@ export default function Home() {
     }
   };
 
-  // ✅ CRITICAL FIX: The return null must go HERE, after all useEffects are declared!
   if (!isMounted) {
     return (
       <main className="flex flex-col h-screen max-w-4xl mx-auto border-x border-[#00ff00]/20 bg-black shadow-2xl shadow-[#00ff00]/5" />
@@ -238,6 +251,27 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-4">
+          
+          {/* THE NEW USER TOGGLE */}
+          <div className="flex bg-[#111] border border-gray-800 rounded p-1 text-xs font-mono mr-4">
+            <button
+              onClick={() => handleUserToggle('A')}
+              className={`px-3 py-1 rounded transition-colors ${
+                activeUser === 'A' ? 'bg-[#00ff00] text-black font-bold' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              USER A
+            </button>
+            <button
+              onClick={() => handleUserToggle('B')}
+              className={`px-3 py-1 rounded transition-colors ${
+                activeUser === 'B' ? 'bg-[#00ff00] text-black font-bold' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              USER B
+            </button>
+          </div>
+
           <button
             onClick={initiateHandshake}
             disabled={!hsmConnected}
@@ -267,3 +301,4 @@ export default function Home() {
     </main>
   );
 }
+```
