@@ -1,12 +1,11 @@
 @import "tailwindcss";
 
-/* In Tailwind v4, standard CSS is preferred over @apply for base elements.
-  This gives us the exact same dark terminal aesthetic without syntax errors.
-*/
 body {
-  background-color: #111111;
-  color: #00ff00;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+    background-color: #111111;
+    color: #ef4444; /* Changed base text to Tailwind red-500 for non-styled elements */
+    font-family:
+        ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        "Liberation Mono", "Courier New", monospace;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
